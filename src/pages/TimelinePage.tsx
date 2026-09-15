@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Search, Route, X, Trash2, Clock, MapPin } from 'lucide-react'
+import { Search, Route, X, Trash2, Clock, MapPin, Image } from 'lucide-react'
 import { useSceneStore } from '@/store/useSceneStore'
+import ScenePhotos from '@/components/ScenePhotos'
 import {
   formatTimestamp,
   getTimeOfDay,
@@ -8,17 +9,27 @@ import {
   getTreeIcon,
   getPedestrianIcon,
 } from '@/utils/sceneHelpers'
-import type { WindowScene } from '@/types'
 
 export default function TimelinePage() {
-  const { routeNames, selectedRoute, currentRouteScenes, selectRoute, loadAll, deleteScene } =
-    useSceneStore()
+  const {
+    scenes,
+    routeNames,
+    selectedRoute,
+    currentRouteScenes,
+    selectRoute,
+    loadAll,
+    deleteScene,
+    removePhotoFromScene,
+  } = useSceneStore()
   const [search, setSearch] = useState('')
-  const [detailScene, setDetailScene] = useState<WindowScene | null>(null)
+  const [detailId, setDetailId] = useState<string | null>(null)
 
   useEffect(() => {
     loadAll()
   }, [loadAll])
+
+  // 详情对象从 store 派生：移除照片后自动刷新，删除记录后自动关闭
+  const detailScene = detailId ? (scenes.find((s) => s.id === detailId) ?? null) : null
 
   const filteredRoutes = routeNames.filter((r) =>
     r.toLowerCase().includes(search.toLowerCase())
@@ -30,7 +41,10 @@ export default function TimelinePage() {
 
   const handleDelete = (id: string) => {
     deleteScene(id)
-    setDetailScene(null)
+  }
+
+  const handleRemovePhoto = (photoId: string) => {
+    if (detailId) removePhotoFromScene(detailId, photoId)
   }
 
   return (
@@ -102,7 +116,7 @@ export default function TimelinePage() {
                     </p>
                   </div>
                   <button
-                    onClick={() => setDetailScene(scene)}
+                    onClick={() => setDetailId(scene.id)}
                     className="group flex-1 rounded-xl border border-teal-800 bg-teal-900/50 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-dusk-400/40 hover:shadow-lg hover:shadow-dusk-400/10"
                   >
                     <div className="flex items-center gap-2 mb-2">
@@ -130,6 +144,12 @@ export default function TimelinePage() {
                           {scene.signText}
                         </span>
                       )}
+                      {scene.photoIds.length > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded bg-teal-800/60 px-1.5 py-0.5 text-[10px] text-mist-300">
+                          <Image className="w-3 h-3" />
+                          {scene.photoIds.length}
+                        </span>
+                      )}
                     </div>
                   </button>
                 </div>
@@ -142,14 +162,14 @@ export default function TimelinePage() {
       {detailScene && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-          onClick={() => setDetailScene(null)}
+          onClick={() => setDetailId(null)}
         >
           <div
-            className="relative mx-4 w-full max-w-md animate-scale-in rounded-2xl border border-teal-700 bg-teal-900 p-6 shadow-2xl"
+            className="relative mx-4 max-h-[90vh] w-full max-w-md animate-scale-in overflow-y-auto rounded-2xl border border-teal-700 bg-teal-900 p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => setDetailScene(null)}
+              onClick={() => setDetailId(null)}
               className="absolute right-4 top-4 text-mist-400 hover:text-mist-100 transition-colors"
             >
               <X className="w-5 h-5" />
@@ -188,6 +208,12 @@ export default function TimelinePage() {
                 <div className="rounded-lg border border-teal-800 px-3 py-2 text-mist-300">
                   {detailScene.note}
                 </div>
+              )}
+              {detailScene.photoIds.length > 0 && (
+                <ScenePhotos
+                  photoIds={detailScene.photoIds}
+                  onRemove={handleRemovePhoto}
+                />
               )}
             </div>
 

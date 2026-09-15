@@ -2,11 +2,20 @@ import type { WindowScene } from '@/types'
 
 const STORAGE_KEY = 'bus_window_scenes'
 
+/** 旧记录没有 photoIds 字段，读取时统一归一化为空数组 */
+function normalize(raw: unknown): WindowScene[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((s) => ({
+    ...(s as WindowScene),
+    photoIds: Array.isArray((s as WindowScene).photoIds) ? (s as WindowScene).photoIds : [],
+  }))
+}
+
 export function getAllScenes(): WindowScene[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return []
-    return JSON.parse(raw) as WindowScene[]
+    return normalize(JSON.parse(raw))
   } catch {
     return []
   }
@@ -15,6 +24,11 @@ export function getAllScenes(): WindowScene[] {
 export function saveScene(scene: WindowScene): void {
   const scenes = getAllScenes()
   scenes.push(scene)
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(scenes))
+}
+
+export function updateScene(updated: WindowScene): void {
+  const scenes = getAllScenes().map((s) => (s.id === updated.id ? updated : s))
   localStorage.setItem(STORAGE_KEY, JSON.stringify(scenes))
 }
 

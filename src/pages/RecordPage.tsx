@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react'
-import { Bus, MapPin, Armchair, Clock, CloudSun, Signpost, TreePine, Users, FileText, Send } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Bus, MapPin, Armchair, Clock, CloudSun, Signpost, TreePine, Users, FileText, Send, Image } from 'lucide-react'
 import { useSceneStore } from '@/store/useSceneStore'
 import { getWeatherIcon, getTreeIcon, getPedestrianIcon, formatTimestamp } from '@/utils/sceneHelpers'
+import PhotoPicker, { type PendingPhoto } from '@/components/PhotoPicker'
+import { validatePhotoFile, photoLimits, PhotoError } from '@/services/photoService'
+import { moveItem } from '@/utils/arrayUtils'
 import type { SceneFormData, Weather, TreeDensity, PedestrianStatus, SeatDirection } from '@/types'
 
 const WEATHERS: Weather[] = ['晴', '多云', '阴', '小雨', '大雨', '雪', '雾']
@@ -25,6 +28,12 @@ export default function RecordPage() {
   const [form, setForm] = useState<SceneFormData>(initialForm)
   const [now, setNow] = useState(new Date())
   const [showSuccess, setShowSuccess] = useState(false)
+  const [photos, setPhotos] = useState<PendingPhoto[]>([])
+  const [photoError, setPhotoError] = useState('')
+  const [saveError, setSaveError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const photosRef = useRef<PendingPhoto[]>([])
+  photosRef.current = photos
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -33,17 +42,79 @@ export default function RecordPage() {
     return () => clearInterval(timer)
   }, [])
 
+  // 卸载时释放所有预览 URL
+  useEffect(() => {
+    return () => {
+      photosRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl))
+    }
+  }, [])
+
   const update = <K extends keyof SceneFormData>(key: K, val: SceneFormData[K]) =>
     setForm((prev) => ({ ...prev, [key]: val }))
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleAddPhotos = async (files: File[]) => {
+    const added: PendingPhoto[] = []
+    const errors: string[] = []
+    for (const file of files) {
+      if (photosRef.current.length + added.length >= photoLimits.maxPhotosPerScene) {
+        errors.push(`每条记录最多添加 ${photoLimits.maxPhotosPerScene} 张照片`)
+        break
+      }
+      try {
+        await validatePhotoFile(file)
+        added.push({
+          localId: crypto.randomUUID(),
+          file,
+          previewUrl: URL.createObjectURL(file),
+        })
+      } catch (err) {
+        errors.push(err instanceof PhotoError ? err.message : `「${file.name}」添加失败`)
+      }
+    }
+    if (added.length > 0) setPhotos((prev) => [...prev, ...added])
+    setPhotoError(errors.join('；'))
+  }
+
+  const handleMovePhoto = (localId: string, direction: -1 | 1) => {
+    setPhotos((prev) => {
+      const from = prev.findIndex((p) => p.localId === localId)
+      return moveItem(prev, from, from + direction)
+    })
+  }
+
+  const handleRemovePhoto = (localId: string) => {
+    setPhotos((prev) => {
+      const target = prev.find((p) => p.localId === localId)
+      if (target) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((p) => p.localId !== localId)
+    })
+  }
+
+  const clearPhotos = () => {
+    photosRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl))
+    setPhotos([])
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    saveScene(form)
-    setShowSuccess(true)
-    setTimeout(() => {
-      setShowSuccess(false)
-      setForm(initialForm)
-    }, 1500)
+    if (submitting) return
+    setSubmitting(true)
+    setSaveError('')
+    try {
+      await saveScene(form, photos.map((p) => p.file))
+      setShowSuccess(true)
+      setTimeout(() => {
+        setShowSuccess(false)
+        setForm(initialForm)
+        clearPhotos()
+        setPhotoError('')
+      }, 1500)
+    } catch (err) {
+      // 保存失败：表单与已选照片全部保留，仅提示原因
+      setSaveError(err instanceof Error ? err.message : '保存失败，请重试')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -141,14 +212,34 @@ export default function RecordPage() {
           <textarea className="w-full bg-teal-850 text-mist-100 rounded-xl px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-dusk-400 resize-none h-24" value={form.note} onChange={(e) => update('note', e.target.value)} />
         </section>
 
+        <section className="space-y-3">
+          <h2 className="text-dusk-400 font-serif text-lg flex items-center gap-2">
+            <Image className="w-4 h-4" />窗景照片
+            <span className="text-mist-500 text-xs font-normal">
+              {photos.length}/{photoLimits.maxPhotosPerScene}
+            </span>
+          </h2>
+          <PhotoPicker
+            photos={photos}
+            maxPhotos={photoLimits.maxPhotosPerScene}
+            disabled={submitting}
+            onAdd={handleAddPhotos}
+            onMove={handleMovePhoto}
+            onRemove={handleRemovePhoto}
+          />
+          {photoError && <p className="text-red-300 text-xs">{photoError}</p>}
+        </section>
+
         <div className="flex items-center gap-2 text-mist-400 text-xs">
           <Clock className="w-3 h-3" />
           <span>{formatTimestamp(now.toISOString())}</span>
         </div>
 
-        <button type="submit"
-          className="w-full py-3 rounded-xl bg-dusk-400 text-teal-950 font-medium text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition">
-          <Send className="w-4 h-4" />保存记录
+        {saveError && <p className="text-red-300 text-xs">{saveError}</p>}
+
+        <button type="submit" disabled={submitting}
+          className="w-full py-3 rounded-xl bg-dusk-400 text-teal-950 font-medium text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition disabled:opacity-60">
+          <Send className="w-4 h-4" />{submitting ? '保存中…' : '保存记录'}
         </button>
       </form>
     </div>

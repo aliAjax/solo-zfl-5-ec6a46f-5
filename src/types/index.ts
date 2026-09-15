@@ -17,6 +17,8 @@ export interface WindowScene {
   treeDensity: TreeDensity
   pedestrianStatus: PedestrianStatus
   note: string
+  /** 照片附件 id（有序）；旧记录可能没有该字段，读取时归一化为 [] */
+  photoIds: string[]
 }
 
 export interface SceneFormData {
