@@ -1,4 +1,6 @@
 /** 生成带真实文件头的测试图片文件 */
+import { readBlobAsArrayBuffer } from '@/utils/blobUtils'
+
 const HEADERS: Record<string, number[]> = {
   png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
   jpeg: [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46],
@@ -35,4 +37,23 @@ export function makeInvalidImageFile(name = 'fake.png'): File {
   return new File([new TextEncoder().encode('这不是图片内容')], name, {
     type: 'image/png',
   })
+}
+
+/**
+ * 构造一个文件头正常（合法 PNG 魔数）但内容损坏、无法解码的 File。
+ * 内容中的 UNDECODABLE 标记供测试用假解码器识别。
+ */
+export function makeUndecodableImageFile(name = 'broken.png'): File {
+  const header = HEADERS.png
+  const body = new TextEncoder().encode('UNDECODABLE 损坏的图片数据')
+  const bytes = new Uint8Array(header.length + body.length)
+  bytes.set(header, 0)
+  bytes.set(body, header.length)
+  return new File([bytes], name, { type: 'image/png' })
+}
+
+/** 测试用假解码器：内容包含 UNDECODABLE 标记即视为无法解码 */
+export async function fakeImageDecoder(blob: Blob): Promise<boolean> {
+  const text = new TextDecoder().decode(await readBlobAsArrayBuffer(blob))
+  return !text.includes('UNDECODABLE')
 }

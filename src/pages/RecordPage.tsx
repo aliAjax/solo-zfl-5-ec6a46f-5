@@ -3,7 +3,7 @@ import { Bus, MapPin, Armchair, Clock, CloudSun, Signpost, TreePine, Users, File
 import { useSceneStore } from '@/store/useSceneStore'
 import { getWeatherIcon, getTreeIcon, getPedestrianIcon, formatTimestamp } from '@/utils/sceneHelpers'
 import PhotoPicker, { type PendingPhoto } from '@/components/PhotoPicker'
-import { validatePhotoFile, photoLimits, PhotoError } from '@/services/photoService'
+import { filterValidPhotoFiles, photoLimits } from '@/services/photoService'
 import { moveItem } from '@/utils/arrayUtils'
 import type { SceneFormData, Weather, TreeDensity, PedestrianStatus, SeatDirection } from '@/types'
 
@@ -53,25 +53,21 @@ export default function RecordPage() {
     setForm((prev) => ({ ...prev, [key]: val }))
 
   const handleAddPhotos = async (files: File[]) => {
-    const added: PendingPhoto[] = []
-    const errors: string[] = []
-    for (const file of files) {
-      if (photosRef.current.length + added.length >= photoLimits.maxPhotosPerScene) {
-        errors.push(`每条记录最多添加 ${photoLimits.maxPhotosPerScene} 张照片`)
-        break
-      }
-      try {
-        await validatePhotoFile(file)
-        added.push({
+    const remaining = Math.max(
+      0,
+      photoLimits.maxPhotosPerScene - photosRef.current.length,
+    )
+    const { valid, errors } = await filterValidPhotoFiles(files, remaining)
+    if (valid.length > 0) {
+      setPhotos((prev) => [
+        ...prev,
+        ...valid.map((file) => ({
           localId: crypto.randomUUID(),
           file,
           previewUrl: URL.createObjectURL(file),
-        })
-      } catch (err) {
-        errors.push(err instanceof PhotoError ? err.message : `「${file.name}」添加失败`)
-      }
+        })),
+      ])
     }
-    if (added.length > 0) setPhotos((prev) => [...prev, ...added])
     setPhotoError(errors.join('；'))
   }
 

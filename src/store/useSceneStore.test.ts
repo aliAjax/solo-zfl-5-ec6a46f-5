@@ -2,9 +2,19 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { IDBFactory } from 'fake-indexeddb'
 import { useSceneStore, SceneStorageError } from './useSceneStore'
 import { getAllScenes } from '@/services/storage'
-import { getScenePhotos, photoLimits, PhotoError } from '@/services/photoService'
+import {
+  getScenePhotos,
+  photoLimits,
+  PhotoError,
+  _setImageDecoderForTests,
+} from '@/services/photoService'
 import { dbGetTotalPhotoBytes, _resetPhotoDbForTests } from '@/services/photoDb'
-import { makeImageFile, makeInvalidImageFile } from '@/test/helpers'
+import {
+  makeImageFile,
+  makeInvalidImageFile,
+  makeUndecodableImageFile,
+  fakeImageDecoder,
+} from '@/test/helpers'
 import type { SceneFormData } from '@/types'
 
 const STORAGE_KEY = 'bus_window_scenes'
@@ -44,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  _setImageDecoderForTests(null)
 })
 
 describe('saveScene（新增记录）', () => {
@@ -104,6 +115,29 @@ describe('saveScene（失败路径：不影响已有数据）', () => {
     ).rejects.toMatchObject({ code: 'too-large' })
     expect(getAllScenes()).toHaveLength(1)
     expect(await dbGetTotalPhotoBytes()).toBe(0)
+  })
+
+  it('内容损坏的图片（文件头正常但无法解码）：保存明确失败，已有记录不受影响', async () => {
+    _setImageDecoderForTests(fakeImageDecoder)
+    await useSceneStore.getState().saveScene(FORM) // 先存一条正常记录
+    await expect(
+      useSceneStore.getState().saveScene(FORM, [makeUndecodableImageFile()]),
+    ).rejects.toMatchObject({ code: 'undecodable' })
+    expect(getAllScenes()).toHaveLength(1)
+    expect(await dbGetTotalPhotoBytes()).toBe(0)
+    expect(useSceneStore.getState().scenes).toHaveLength(1)
+  })
+
+  it('好图坏图混合提交：整体保存失败，记录与照片都不落盘', async () => {
+    _setImageDecoderForTests(fakeImageDecoder)
+    await expect(
+      useSceneStore
+        .getState()
+        .saveScene(FORM, [makeImageFile('good.png'), makeUndecodableImageFile()]),
+    ).rejects.toMatchObject({ code: 'undecodable' })
+    expect(getAllScenes()).toEqual([])
+    expect(await dbGetTotalPhotoBytes()).toBe(0)
+    expect(useSceneStore.getState().scenes).toEqual([])
   })
 
   it('空间不足：保存明确失败，已有记录与照片完好', async () => {

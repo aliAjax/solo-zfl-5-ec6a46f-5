@@ -6,12 +6,19 @@ import {
   deletePhotos,
   deletePhotosByScene,
   validatePhotoFile,
+  filterValidPhotoFiles,
   sniffImageFormat,
   photoLimits,
   PhotoError,
+  _setImageDecoderForTests,
 } from './photoService'
 import { dbGetTotalPhotoBytes, _resetPhotoDbForTests } from './photoDb'
-import { makeImageFile, makeInvalidImageFile } from '@/test/helpers'
+import {
+  makeImageFile,
+  makeInvalidImageFile,
+  makeUndecodableImageFile,
+  fakeImageDecoder,
+} from '@/test/helpers'
 import { readBlobAsArrayBuffer } from '@/utils/blobUtils'
 
 const DEFAULT_LIMITS = { ...photoLimits }
@@ -24,6 +31,7 @@ beforeEach(() => {
 
 afterEach(() => {
   Object.assign(photoLimits, DEFAULT_LIMITS)
+  _setImageDecoderForTests(null)
 })
 
 describe('sniffImageFormat（文件头嗅探）', () => {
@@ -131,6 +139,86 @@ describe('savePhotosForScene / getScenePhotos（保存与读取）', () => {
       ]),
     ).rejects.toMatchObject({ code: 'too-many' })
     expect(await dbGetTotalPhotoBytes()).toBe(0)
+  })
+})
+
+describe('解码校验（文件头正常但内容损坏）', () => {
+  beforeEach(() => {
+    _setImageDecoderForTests(fakeImageDecoder)
+  })
+
+  it('validatePhotoFile 明确拒绝无法解码的图片', async () => {
+    const err = await validatePhotoFile(makeUndecodableImageFile('broken.png')).catch(
+      (e) => e,
+    )
+    expect(err).toBeInstanceOf(PhotoError)
+    expect(err.code).toBe('undecodable')
+    expect(err.message).toContain('broken.png')
+  })
+
+  it('正常图片仍通过解码校验', async () => {
+    await expect(validatePhotoFile(makeImageFile('ok.png'))).resolves.toBeUndefined()
+    await expect(
+      validatePhotoFile(makeImageFile('ok.jpg', 'jpeg')),
+    ).resolves.toBeUndefined()
+  })
+
+  it('savePhotosForScene 拒绝损坏图片，不写入任何数据', async () => {
+    await expect(
+      savePhotosForScene('scene-1', [makeUndecodableImageFile()]),
+    ).rejects.toMatchObject({ code: 'undecodable' })
+    expect(await dbGetTotalPhotoBytes()).toBe(0)
+  })
+
+  it('同批次好图坏图混合：整体保存失败，一张都不写入', async () => {
+    await expect(
+      savePhotosForScene('scene-1', [
+        makeImageFile('good-1.png'),
+        makeUndecodableImageFile('broken.png'),
+        makeImageFile('good-2.png'),
+      ]),
+    ).rejects.toMatchObject({ code: 'undecodable' })
+    expect(await dbGetTotalPhotoBytes()).toBe(0)
+  })
+})
+
+describe('filterValidPhotoFiles（选图分批校验）', () => {
+  beforeEach(() => {
+    _setImageDecoderForTests(fakeImageDecoder)
+  })
+
+  it('同批次混合：好图进入列表，坏图给出明确错误且不计入数量', async () => {
+    const { valid, errors } = await filterValidPhotoFiles(
+      [
+        makeImageFile('a.png'),
+        makeUndecodableImageFile('bad-1.png'),
+        makeImageFile('b.jpg', 'jpeg'),
+        makeUndecodableImageFile('bad-2.png'),
+      ],
+      9,
+    )
+    expect(valid.map((f) => f.name)).toEqual(['a.png', 'b.jpg'])
+    expect(errors).toHaveLength(2)
+    expect(errors[0]).toContain('bad-1.png')
+    expect(errors[1]).toContain('bad-2.png')
+  })
+
+  it('全部损坏时不产生任何有效文件', async () => {
+    const { valid, errors } = await filterValidPhotoFiles(
+      [makeUndecodableImageFile('x.png'), makeUndecodableImageFile('y.png')],
+      9,
+    )
+    expect(valid).toEqual([])
+    expect(errors).toHaveLength(2)
+  })
+
+  it('超过剩余名额时提示数量限制，名额内的好图正常通过', async () => {
+    const { valid, errors } = await filterValidPhotoFiles(
+      [makeImageFile('1.png'), makeImageFile('2.png'), makeImageFile('3.png')],
+      2,
+    )
+    expect(valid.map((f) => f.name)).toEqual(['1.png', '2.png'])
+    expect(errors.some((m) => m.includes('最多'))).toBe(true)
   })
 })
 

@@ -1,5 +1,5 @@
 /**
- * 照片附件服务层：文件校验、容量控制与读写编排。
+ * 照片附件服务层：文件校验（大小 / 文件头 / 可解码性）、容量控制与读写编排。
  *
  * 所有失败都抛出带 code 的 PhotoError，UI 据此给出明确提示；
  * 任何失败都不会写入部分数据（照片先校验、再单事务写入）。
@@ -17,6 +17,7 @@ import { readBlobAsArrayBuffer } from '@/utils/blobUtils'
 export type PhotoErrorCode =
   | 'too-large' // 单张超过大小限制
   | 'invalid-image' // 不是可识别的图片
+  | 'undecodable' // 文件头正常但内容损坏，无法解码
   | 'too-many' // 超过单条记录的照片数量上限
   | 'quota' // 存储空间不足
   | 'write-failed' // 其他写入失败
@@ -98,6 +99,60 @@ function formatMb(bytes: number): string {
   return `${Math.round((bytes / 1024 / 1024) * 10) / 10}MB`
 }
 
+/** 图片解码探测：返回 true 表示浏览器能真正解码该图片 */
+export type ImageDecoder = (blob: Blob) => Promise<boolean>
+
+/** 浏览器环境的真实解码探测：优先 createImageBitmap，兜底 <img> 加载 */
+async function decodeImageInBrowser(blob: Blob): Promise<boolean> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob)
+      const ok = bitmap.width > 0 && bitmap.height > 0
+      bitmap.close()
+      return ok
+    } catch {
+      return false
+    }
+  }
+  if (typeof Image === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    // 无解码探测能力的环境（如未注入解码器的测试环境）：不阻断
+    return true
+  }
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob)
+    const probe = new Image()
+    probe.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve(probe.naturalWidth > 0)
+    }
+    probe.onerror = () => {
+      URL.revokeObjectURL(url)
+      resolve(false)
+    }
+    probe.src = url
+  })
+}
+
+let imageDecoder: ImageDecoder = decodeImageInBrowser
+
+/** 仅供测试：注入模拟解码器；传 null 恢复浏览器默认实现 */
+export function _setImageDecoderForTests(decoder: ImageDecoder | null): void {
+  imageDecoder = decoder ?? decodeImageInBrowser
+}
+
+/** 解码探测，失败抛出 undecodable 错误 */
+async function assertDecodable(blob: Blob, fileName: string): Promise<void> {
+  let ok = false
+  try {
+    ok = await imageDecoder(blob)
+  } catch {
+    ok = false
+  }
+  if (!ok) {
+    throw new PhotoError('undecodable', `「${fileName}」图片内容损坏，无法读取`, fileName)
+  }
+}
+
 /** 校验单个文件的大小、MIME 与文件头，失败抛 PhotoError */
 export function validatePhotoBuffer(
   file: { name: string; type: string; size: number },
@@ -115,10 +170,37 @@ export function validatePhotoBuffer(
   }
 }
 
-/** 校验单个文件（读取文件头后校验），供表单选图时即时反馈 */
+/** 校验单个文件（大小、文件头、可解码性），供表单选图时即时反馈 */
 export async function validatePhotoFile(file: File): Promise<void> {
   const head = new Uint8Array(await readBlobAsArrayBuffer(file.slice(0, 16)))
   validatePhotoBuffer(file, head)
+  await assertDecodable(file, file.name)
+}
+
+/**
+ * 逐个校验一批文件，返回可进入待保存列表的文件与逐条错误信息。
+ * 好图坏图混合时：好图全部保留，坏图各自给出明确原因，互不影响。
+ * 超过 maxCount 的部分不校验，直接给出一条数量限制提示。
+ */
+export async function filterValidPhotoFiles(
+  files: File[],
+  maxCount: number,
+): Promise<{ valid: File[]; errors: string[] }> {
+  const valid: File[] = []
+  const errors: string[] = []
+  for (const file of files) {
+    if (valid.length >= maxCount) {
+      errors.push(`每条记录最多添加 ${photoLimits.maxPhotosPerScene} 张照片`)
+      break
+    }
+    try {
+      await validatePhotoFile(file)
+      valid.push(file)
+    } catch (err) {
+      errors.push(err instanceof PhotoError ? err.message : `「${file.name}」添加失败`)
+    }
+  }
+  return { valid, errors }
 }
 
 function isQuotaError(err: unknown): boolean {
@@ -144,6 +226,7 @@ export async function savePhotosForScene(sceneId: string, files: File[]): Promis
   for (const file of files) {
     const buffer = await readBlobAsArrayBuffer(file)
     validatePhotoBuffer(file, new Uint8Array(buffer.slice(0, 16)))
+    await assertDecodable(file, file.name)
     prepared.push({ file, buffer })
   }
 
